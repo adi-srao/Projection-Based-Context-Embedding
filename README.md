@@ -1,7 +1,7 @@
 # Projection-Based Context Embedding (PBCE)
 ### Uncertainty-Aware 3D ALS Point Cloud Semantic Segmentation
 
-An implementation of Projection-Based Context Embedding for large-scale Airborne LiDAR Scanning (ALS) point cloud segmentation, extending the architecture proposed by [Dai et al.](https://arxiv.org/abs/2303.14796) with several key architectural and engineering departures. Evaluated on the AHN3 and Toronto-3D datasets.
+An implementation of Projection-Based Context Embedding for large-scale Airborne LiDAR Scanning (ALS) point cloud segmentation, extending the architecture proposed by [Dai et al.]([https://arxiv.org/abs/2303.14796](https://ieeexplore.ieee.org/document/10506699)) with several key architectural and engineering departures. Evaluated on the AHN3 and Toronto-3D datasets.
 
 **Best result: 0.7106 mIoU on AHN3** (Ground, Vegetation, Buildings)
 

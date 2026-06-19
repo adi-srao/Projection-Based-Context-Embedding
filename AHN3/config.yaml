@@ -1,0 +1,47 @@
+# Directory Paths
+paths:
+  train_csv_dir: 'F:\Aditya\Lidar Semantic Segmentation\AHN3 Tiles\Uncertainty Added'
+  save_dir: "./AHN3_Results/current"
+
+# Model Architecture
+model:
+  num_classes: 5
+  image_size: [96, 96]
+  resolution: 0.5
+  grid_size: [12, 96, 96]
+  pretrained_2d: true
+  local_size: 25.6
+
+# Dataset Parameters
+dataset:
+  local_size: 25.6
+  context_size: 128.0
+  max_local_pts: 8192
+  max_ctx_pts: 32768
+  stride_ratio: 0.5
+  workers: 6
+  clip_max: 4
+  clip_min: 0.1
+  use_uncertainty: true
+  in_point_feat: 12
+  remove_minority_classes: true
+  use_geometric_features: false
+
+
+# Training Hyperparameters
+training:
+  num_epochs: 20
+  batch_size: 16
+  init_lr: 0.0005
+  weight_decay: 0.01
+  lambda_scc: 0.25
+  num_folds: 3
+  patience: 6
+  dropout_prob: 0.1
+  label_smoothing: 0.1
+  gamma: 2.0
+  alpha: 0.3
+
+# Reintroduced label smoothing and dropout to stop forgetting and improve generalization
+# Increased weight decay and patience while reducing learning rate to improve stability
+# Increased alpha to increae weight to dice loss to improve performance on minority classes

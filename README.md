@@ -122,7 +122,7 @@ Key dependencies: `torch==2.6.0+cu124`, `spconv-cu124==2.3.8`, `jakteristics==0.
 
 ### Data
 
-- **AHN3**: Available from the [AHN portal](https://www.ahn.nl/). Preprocessing (geometric descriptor computation, normalisation) is handled in `preprocessing.ipynb`.
+- **AHN3**: Available from the [AHN portal](https://geotiles.nl/). Preprocessing (geometric descriptor computation, normalisation) is handled in `preprocessing.ipynb`.
 - **Toronto-3D**: Available from the [Toronto-3D repository](https://github.com/WeikaiTan/Toronto-3D).
 
 ### Training

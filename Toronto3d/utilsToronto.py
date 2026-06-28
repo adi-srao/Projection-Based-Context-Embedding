@@ -1,8 +1,11 @@
 from typing import Dict, List
 import numpy as np
+import pandas as pd
 import torch       
+import os
 from tqdm.auto import tqdm
 from torch.amp import autocast
+from PointCloudDataset import PointCloudDataset
 
 def calculate_class_weights(dataset, num_classes, clip_Max, clip_Min):
     counts = np.zeros(num_classes)
@@ -161,3 +164,141 @@ def validate(model, loader, device, num_classes):
         "loss": tot/n, "seg": seg/n, "scc": scc/n,
         "miou": miou,  "acc": acc,   "iou_per_cls": iou_per_cls,
     }
+
+
+def build_window_sampler(dataset, minority_boost):
+    weights = [float(minority_boost) if window[-1] else 1.0 for window in dataset._windows]        
+    return torch.utils.data.WeightedRandomSampler(
+        weights, 
+        num_samples=len(weights), 
+        replacement=True
+    )
+
+def count_frames_for_tile(csv_path: str, LOCAL_SIZE: float, CONTEXT_SIZE: float, MAX_LOCAL_PTS: int, 
+                          MAX_CTX_PTS: int, STRIDE_RATIO: float, USE_UNCERTAINTY: bool, USE_GEOMETRY: bool, minority_classes: set[int]) -> int:
+    ds = PointCloudDataset(
+        [csv_path],
+        local_size=LOCAL_SIZE,
+        context_size=CONTEXT_SIZE,
+        max_local=MAX_LOCAL_PTS,
+        max_context=MAX_CTX_PTS,
+        stride_ratio=STRIDE_RATIO,
+        augment=False,
+        use_uncertainty=USE_UNCERTAINTY,
+        remove_minority=False,
+        use_geometric_features=USE_GEOMETRY,
+        minority_classes=minority_classes
+    )
+    n = len(ds)
+    ds.cleanup()
+    return n
+
+
+def get_class_counts(csv_path: str, NUM_CLASSES: int) -> np.ndarray:
+    df = pd.read_csv(csv_path)
+    counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    for cls, cnt in df["label"].value_counts().items():
+        if 0 <= int(cls) < NUM_CLASSES:
+            counts[int(cls)] += int(cnt)
+    return counts
+
+
+def compute_minority_classes(csv_paths: list[str], NUM_CLASSES: int, CLIP_MAX: float) -> set[int]:
+    total_counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    for p in csv_paths:
+        total_counts += get_class_counts(p, NUM_CLASSES)
+
+    raw = total_counts.sum() / (NUM_CLASSES * np.maximum(total_counts, 1).astype(float))
+    raw_norm = raw / raw.min()
+
+    return {c for c in range(NUM_CLASSES) if raw_norm[c] >= CLIP_MAX}
+
+
+def compute_display_weights(train_counts: np.ndarray, NUM_CLASSES: int, CLIP_MIN: float, CLIP_MAX: float) -> np.ndarray:
+    total = train_counts.sum()
+    w = np.ones(NUM_CLASSES, dtype=np.float32)
+    for i in range(NUM_CLASSES):
+        if train_counts[i] > 0:
+            w[i] = total / (NUM_CLASSES * train_counts[i])
+    w = w / w.min()
+    return np.clip(w, CLIP_MIN, CLIP_MAX)
+
+
+def print_fold_summary(
+    fold_idx: int,
+    train_paths: list[str],
+    val_paths: list[str],
+    NUM_CLASSES: int,
+    MINORITY_CLASSES: set,
+    CLIP_MIN: float,
+    CLIP_MAX: float,
+    MINORITY_BOOST: float,
+    LOCAL_SIZE: float,
+    CONTEXT_SIZE: float,
+    MAX_LOCAL_PTS: int,
+    MAX_CTX_PTS: int,
+    STRIDE_RATIO: float,
+    USE_UNCERTAINTY: bool,
+    USE_GEOMETRY: bool,
+) -> None:
+
+    print(f"  FOLD {fold_idx}")
+
+    print(f"  TRAINING TILES  ({len(train_paths)} tiles)")
+    print(f"  {'Tile':<40} {'Frames':>8}")
+
+    train_total_frames = 0
+    train_total_counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    for p in train_paths:
+        frames = count_frames_for_tile(p, LOCAL_SIZE, CONTEXT_SIZE, MAX_LOCAL_PTS, MAX_CTX_PTS, STRIDE_RATIO, USE_UNCERTAINTY, USE_GEOMETRY, MINORITY_CLASSES)
+        counts = get_class_counts(p, NUM_CLASSES)
+        train_total_frames += frames
+        train_total_counts += counts
+        print(f"  {os.path.basename(p):<40} {frames:>8,}")
+    print(f"  {'TOTAL':<40} {train_total_frames:>8,}")
+
+    print(f"\n  VALIDATION TILES  ({len(val_paths)} tiles)")
+    print(f"  {'Tile':<40} {'Frames':>8}")
+
+    val_total_frames = 0
+    val_total_counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    for p in val_paths:
+        frames = count_frames_for_tile(p, LOCAL_SIZE, CONTEXT_SIZE, MAX_LOCAL_PTS, MAX_CTX_PTS, STRIDE_RATIO, USE_UNCERTAINTY, USE_GEOMETRY, MINORITY_CLASSES)
+        counts = get_class_counts(p, NUM_CLASSES)
+        val_total_frames += frames
+        val_total_counts += counts
+        print(f"  {os.path.basename(p):<40} {frames:>8,}")
+    print(f"  {'TOTAL':<40} {val_total_frames:>8,}")
+
+    train_total_pts = train_total_counts.sum()
+    val_total_pts   = val_total_counts.sum()
+
+    print(f"\n  CLASS DISTRIBUTION")
+    print(f"  {'#':<3} {'Train pts':>12} {'Train%':>7} "
+          f"{'Val pts':>12} {'Val%':>7}  Minority?")
+
+    for c in range(NUM_CLASSES):
+        tr_pct = 100.0 * train_total_counts[c] / train_total_pts if train_total_pts > 0 else 0.0
+        vl_pct = 100.0 * val_total_counts[c]   / val_total_pts   if val_total_pts   > 0 else 0.0
+        flag   = " Yes" if c in MINORITY_CLASSES else ""
+        print(f"  {c:<3}  "
+              f"{train_total_counts[c]:>12,} {tr_pct:>6.2f}% "
+              f"{val_total_counts[c]:>12,} {vl_pct:>6.2f}%"
+              f"{flag}")
+
+    weights = compute_display_weights(train_total_counts, NUM_CLASSES, CLIP_MIN, CLIP_MAX)
+
+    print(f"\n  CLASS WEIGHTS  (CLIP_MAX={CLIP_MAX}, CLIP_MIN={CLIP_MIN})")
+    print(f"  {'#':<3} {'Raw inv-freq':>13} {'Clipped wt':>11}  Capped?")
+    print(f"  {'-'*3}  {'-'*13} {'-'*11}  {'-'*7}")
+
+    raw = train_total_counts.sum() / (NUM_CLASSES * np.maximum(train_total_counts, 1).astype(float))
+    raw_norm = raw / raw.min()
+    for c in range(NUM_CLASSES):
+        capped = "  Yes" if raw_norm[c] >= CLIP_MAX else ""
+        print(f"  {c:<3}  "
+              f"{raw_norm[c]:>13.2f}x {weights[c]:>11.4f}{capped}")
+
+    minority_str = ", ".join(f"{c} " for c in sorted(MINORITY_CLASSES))
+    print(f"\n  WINDOW SAMPLER  ({MINORITY_BOOST}x)")
+    print(f"  Minority classes: {minority_str}")

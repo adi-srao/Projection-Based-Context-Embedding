@@ -19,9 +19,8 @@ class PointCloudDataset(Dataset):
         augment:      bool  = False,
         grid_res:     float = 15.0,
         use_uncertainty: bool = True,
-        remove_minority: bool = False,
+        remove_minority: object = False,
         use_geometric_features: bool = True,
-        minority_classes: set[int] = {3, 4, 5, 6, 7, 8},
     ):
         super().__init__()
 
@@ -36,20 +35,21 @@ class PointCloudDataset(Dataset):
         self.augment      = augment
         self.grid_res     = grid_res
         self.use_uncertainty = use_uncertainty
+        # remove_minority may be False, True (use default list), or a list of labels to remove
         self.remove_minority = remove_minority
         self.use_geometric_features = use_geometric_features
         self._rng         = np.random.default_rng(42)
 
+        # Shared memory handles (held so they aren't GC'd) and metadata
         self._shms:      List[SharedMemory] = []
         self._shapes:    List[Tuple] = []
         self._dtypes:    List[np.dtype] = []
         self._shm_names: List[str] = []
 
         self._z_floors:  List[float] = []
-        self._windows:   List[Tuple[int, float, float, bool]] = []
+        self._windows:   List[Tuple[int, float, float]] = []
         self._grids:     List[Dict[Tuple[int, int], np.ndarray]] = []
-
-        self.minority_classes = minority_classes
+        self._sampled_indices: List[Tuple[np.ndarray, np.ndarray]] = []
 
         for fi, path in enumerate(self.csv_paths):
             df   = pd.read_csv(path)
@@ -58,12 +58,17 @@ class PointCloudDataset(Dataset):
                 df = df.drop(columns=['epistemic'], errors='ignore')
                 if(not self.use_geometric_features):
                     df = df[['x', 'y', 'z', 'label']]
+
             else:
                 if(not self.use_geometric_features):
                     df = df[['x', 'y', 'z', 'epistemic', 'label']]
         
-            if(self.remove_minority):
-                df = df[~df['label'].isin([3, 4])]
+            if self.remove_minority:
+                # If a list-like is provided, use it; if True, fall back to legacy [3,4]
+                if isinstance(self.remove_minority, (list, tuple, np.ndarray)):
+                    df = df[~df['label'].isin(self.remove_minority)]
+                elif self.remove_minority is True:
+                    df = df[~df['label'].isin([3, 4])]
 
             cols = [c for c in df.columns if c != 'label']
             for c in ['z', 'y', 'x']:
@@ -76,6 +81,7 @@ class PointCloudDataset(Dataset):
             z_floor   = float(df['z'].min())
             tile_data = np.hstack([features, labels.reshape(-1, 1)]).astype(np.float32)
 
+            # Allocate shared memory and copy tile into it
             shm = SharedMemory(create=True, size=tile_data.nbytes)
             buf = np.ndarray(tile_data.shape, dtype=tile_data.dtype, buffer=shm.buf)
             buf[:] = tile_data
@@ -84,23 +90,43 @@ class PointCloudDataset(Dataset):
             self._shapes.append(tile_data.shape)
             self._dtypes.append(tile_data.dtype)
             self._shm_names.append(shm.name)
+
             self._z_floors.append(z_floor)
+            self._grids.append(self._build_grid(tile_data))
+            self._windows.extend(self._compute_windows(tile_data, fi))
 
-            grid = self._build_grid(tile_data)
-            self._grids.append(grid)
+        for idx in range(len(self._windows)):
+            fi, cx, cy = self._windows[idx]
+            pts  = np.ndarray(self._shapes[fi], dtype=self._dtypes[fi], buffer=self._shms[fi].buf)
+            grid = self._grids[fi]
+            
+            # Query local and context candidates
+            l_cand = self._get_indices_from_grid(grid, cx, cy, self.local_size)
+            c_cand = self._get_indices_from_grid(grid, cx, cy, self.context_size)
+            
+            # Precise spatial masking
+            xs, ys = pts[:, 0], pts[:, 1]
+            hs, hc = self.local_size / 2.0, self.context_size / 2.0
+            
+            l_mask = (xs[l_cand] >= cx-hs) & (xs[l_cand] < cx+hs) & \
+                     (ys[l_cand] >= cy-hs) & (ys[l_cand] < cy+hs)
+            c_mask = (xs[c_cand] >= cx-hc) & (xs[c_cand] < cx+hc) & \
+                     (ys[c_cand] >= cy-hc) & (ys[c_cand] < cy+hc)
+            
+            # Sampling
+            l_idx = self._sample(l_cand[l_mask], self.max_local, self._rng)
+            c_idx = self._sample(c_cand[c_mask], self.max_context, self._rng)
+            
+            self._sampled_indices.append((l_idx, c_idx))
 
-            tile_windows = self._compute_windows_raw(tile_data, fi)
-
-            for win in tile_windows:
-                _, cx, cy = win
-                l_idx, _ = self._sample_window(fi, cx, cy, tile_data)
-                window_labels = labels[l_idx]
-                has_minority = any(lbl in minority_classes for lbl in window_labels) if len(window_labels) > 0 else False
-                self._windows.append((fi, cx, cy, has_minority))
+        print(f"Dataset Loaded: {len(self._windows)} windows indexed in RAM.")
 
     def _get_tile(self, fi: int) -> np.ndarray:
+        """Attach to the shared memory block and return a numpy view."""
         shm = SharedMemory(name=self._shm_names[fi], create=False)
         arr = np.ndarray(self._shapes[fi], dtype=self._dtypes[fi], buffer=shm.buf)
+        # Keep shm alive for the duration of this call via a local reference
+        # (do NOT close it here — caller must close after use)
         return arr, shm
 
     def _build_grid(self, pts: np.ndarray) -> Dict[Tuple[int, int], np.ndarray]:
@@ -118,10 +144,11 @@ class PointCloudDataset(Dataset):
         hs = size / 2.0
         x_range = range(int((cx - hs) / self.grid_res), int((cx + hs) / self.grid_res) + 1)
         y_range = range(int((cy - hs) / self.grid_res), int((cy + hs) / self.grid_res) + 1)
+        
         indices = [grid[(x, y)] for x in x_range for y in y_range if (x, y) in grid]
         return np.concatenate(indices) if indices else np.array([], dtype=np.int64)
 
-    def _compute_windows_raw(self, pts: np.ndarray, file_idx: int) -> List[Tuple[int, float, float]]:
+    def _compute_windows(self, pts: np.ndarray, file_idx: int) -> List[Tuple[int, float, float]]:
         stride = self.local_size * self.stride_ratio
         xs, ys = pts[:, 0], pts[:, 1]
         x_min, x_max = float(xs.min()), float(xs.max())
@@ -137,23 +164,6 @@ class PointCloudDataset(Dataset):
             cx += stride
         return windows
 
-    def _sample_window(self, fi: int, cx: float, cy: float, pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        grid = self._grids[fi]
-        xs, ys = pts[:, 0], pts[:, 1]
-        hs, hc = self.local_size / 2.0, self.context_size / 2.0
-
-        l_cand = self._get_indices_from_grid(grid, cx, cy, self.local_size)
-        c_cand = self._get_indices_from_grid(grid, cx, cy, self.context_size)
-
-        l_mask = (xs[l_cand] >= cx - hs) & (xs[l_cand] < cx + hs) & \
-                 (ys[l_cand] >= cy - hs) & (ys[l_cand] < cy + hs)
-        c_mask = (xs[c_cand] >= cx - hc) & (xs[c_cand] < cx + hc) & \
-                 (ys[c_cand] >= cy - hc) & (ys[c_cand] < cy + hc)
-
-        l_idx = self._sample(l_cand[l_mask], self.max_local, self._rng)
-        c_idx = self._sample(c_cand[c_mask], self.max_context, self._rng)
-        return l_idx, c_idx
-
     @staticmethod
     def _sample(idx: np.ndarray, n: int, rng) -> np.ndarray:
         if len(idx) == 0:
@@ -163,18 +173,17 @@ class PointCloudDataset(Dataset):
         return rng.choice(idx, n, replace=True)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        fi, cx, cy, _ = self._windows[idx]
-        pts, shm_tile = self._get_tile(fi)
+        fi, _, _ = self._windows[idx]
+        l_idx, c_idx = self._sampled_indices[idx]
 
+        pts, shm = self._get_tile(fi)
         try:
-            l_idx, c_idx = self._sample_window(fi, cx, cy, pts)
-
             p_local   = pts[l_idx, :-1].copy()
             p_context = pts[c_idx, :-1].copy()
             labels    = pts[l_idx, -1].copy()
             z_floor   = self._z_floors[fi]
         finally:
-            shm_tile.close()
+            shm.close()
 
         ctx_min = p_context[:, :3].min(axis=0)
         p_local[:, :2]   -= ctx_min[:2]
@@ -217,16 +226,17 @@ class PointCloudDataset(Dataset):
         return pts
 
     def cleanup(self):
+        """Call this when done with the dataset to free shared memory."""
         for shm in self._shms:
-            try:
-                shm.close()
-                shm.unlink()
-            except Exception: pass
+            shm.close()
+            shm.unlink()
         self._shms.clear()
 
     def __len__(self) -> int:
         return len(self._windows)
 
     def __del__(self):
-        try: self.cleanup()
-        except Exception: pass
+        try:
+            self.cleanup()
+        except Exception:
+            pass

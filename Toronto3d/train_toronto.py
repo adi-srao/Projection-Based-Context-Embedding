@@ -15,13 +15,14 @@ from sklearn.model_selection import KFold
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 """
-Increased clip max to 10, 4 seemed to be too low for the degree of class imbalance seen. Implemented a weighted sampler that draws frames with minority points more frequently.
+Enabled processing of three orthogonal 2D views (XY, YZ, XZ) alongside the 3D grid, dynamically rastered based on tile ranges and padded to ensure that the 2D images 
+are passed to the Projection Processing accurately while remaining agnostic of the model being used. All three view features and their relative depth/height/width coordinates 
+during fusion to capture geometry regardless of MLS/ALS data.
 """
 
 TRAIN_CSV_DIR = r"F:\Aditya\Tiles\Toronto Tiles\split_tiles"
 SAVE_DIR      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\current"
 NUM_CLASSES   = 9
-IMAGE_SIZE    = (256, 256)
 RESOLUTION    = 0.25
 GRID_SIZE     = (20, 256, 256)
 PRETRAINED_2D = True
@@ -31,7 +32,7 @@ CONTEXT_SIZE  = 23.04
 STRIDE_RATIO  = 0.25
 MAX_LOCAL_PTS = 32768
 MAX_CTX_PTS   = 65536
-WORKERS       = 3
+WORKERS       = 2
 CLIP_MAX      = 10      
 CLIP_MIN      = 0.1
 USE_UNCERTAINTY = True
@@ -119,9 +120,7 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
     model = PCENet(
         num_classes=NUM_CLASSES,
         in_point_feat=IN_POINT_FEAT,
-        image_size=IMAGE_SIZE,
         resolution=RESOLUTION,
-        grid_size=GRID_SIZE,
         pretrained_2d=PRETRAINED_2D,
         lambda_scc=LAMBDA_SCC,
         weights=class_weights,

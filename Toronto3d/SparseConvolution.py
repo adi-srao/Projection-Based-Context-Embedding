@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,13 +14,16 @@ def _make_linear(in_ch: int, out_ch: int, bn: bool = True, relu: bool = True) ->
     return nn.Sequential(*layers)
 
 class SPVConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, grid_size=(16, 16, 16)):
+    def __init__(self, in_ch, out_ch, resolution: float = 0.5, tile_ranges: Tuple[float, float, float] = (25.6, 25.6, 40.0)):
         super().__init__()
-        self.grid_size = grid_size
+        self.resolution = resolution
+        
+        self.D = int(round(tile_ranges[0] / resolution)) # Depth (X)
+        self.H = int(round(tile_ranges[1] / resolution)) # Height (Y)
+        self.W = int(round(tile_ranges[2] / resolution)) # Width (Z)
 
         self.vox_conv = spconv.SparseSequential(
-            spconv.SubMConv3d(in_ch, out_ch, kernel_size=3, padding=1, bias=False,
-                              indice_key="subm0"),
+            spconv.SubMConv3d(in_ch, out_ch, kernel_size=3, padding=1, bias=False, indice_key="subm0"),
             nn.BatchNorm1d(out_ch),
             nn.ReLU(inplace=True),
         )
@@ -49,33 +52,28 @@ class SPVConvBlock(nn.Module):
         return out
 
     def forward(self, point_feat, point_xyz, bi, B):
-        D, H, W = self.grid_size
-
         vc = torch.zeros_like(point_xyz)
         for b in range(B):
-            m = bi == b
-            if not m.any():
-                continue
-            pts_b   = point_xyz[m]
-            xyz_min = pts_b.min(0).values
-            span    = (pts_b.max(0).values - xyz_min).clamp(1e-6)
-            vc[m]   = (pts_b - xyz_min) / span * point_xyz.new_tensor([D-1, H-1, W-1])
+            mask = bi == b
+            if not mask.any(): continue
+            pts_b = point_xyz[mask]
+            vc[mask] = torch.floor((pts_b - pts_b.min(0).values) / self.resolution)
 
-        ci = vc[:, 0].long().clamp(0, D-1)
-        hi = vc[:, 1].long().clamp(0, H-1)
-        wi = vc[:, 2].long().clamp(0, W-1)
+        ci = vc[:, 0].long().clamp(0, self.D - 1)
+        hi = vc[:, 1].long().clamp(0, self.H - 1)
+        wi = vc[:, 2].long().clamp(0, self.W - 1)
         coords_int = torch.stack([bi, ci, hi, wi], dim=1).int()
 
-        sp_in  = self._voxelise(coords_int, point_feat, B)
+        sp_in  = spconv.SparseConvTensor(point_feat, coords_int, [self.D, self.H, self.W], B)
         sp_out = self.vox_conv(sp_in)
 
         vox_in_dense  = sp_in.dense()
         vox_out_dense = sp_out.dense()
 
         nc = vc.float().clone()
-        nc[:, 0] = 2 * nc[:, 0] / max(D-1, 1) - 1
-        nc[:, 1] = 2 * nc[:, 1] / max(H-1, 1) - 1
-        nc[:, 2] = 2 * nc[:, 2] / max(W-1, 1) - 1
+        nc[:, 0] = 2 * nc[:, 0] / max(self.D - 1, 1) - 1
+        nc[:, 1] = 2 * nc[:, 1] / max(self.H - 1, 1) - 1
+        nc[:, 2] = 2 * nc[:, 2] / max(self.W - 1, 1) - 1
 
         pre_pts  = self._interp(vox_in_dense,  nc, bi, B)
         post_pts = self._interp(vox_out_dense, nc, bi, B)

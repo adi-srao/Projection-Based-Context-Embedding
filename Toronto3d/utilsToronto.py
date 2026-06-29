@@ -175,7 +175,7 @@ def build_window_sampler(dataset, minority_boost):
     )
 
 def count_frames_for_tile(csv_path: str, LOCAL_SIZE: float, CONTEXT_SIZE: float, MAX_LOCAL_PTS: int, 
-                          MAX_CTX_PTS: int, STRIDE_RATIO: float, USE_UNCERTAINTY: bool, USE_GEOMETRY: bool, minority_classes: set[int]) -> int:
+                          MAX_CTX_PTS: int, STRIDE_RATIO: float, USE_UNCERTAINTY: bool, USE_GEOMETRY: bool, MINORITY_CLASSES: set[int]) -> int:
     ds = PointCloudDataset(
         [csv_path],
         local_size=LOCAL_SIZE,
@@ -187,7 +187,7 @@ def count_frames_for_tile(csv_path: str, LOCAL_SIZE: float, CONTEXT_SIZE: float,
         use_uncertainty=USE_UNCERTAINTY,
         remove_minority=False,
         use_geometric_features=USE_GEOMETRY,
-        minority_classes=minority_classes
+        minority_classes=MINORITY_CLASSES
     )
     n = len(ds)
     ds.cleanup()

@@ -126,6 +126,9 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         weights=class_weights,
         dropout_prob=DROPOUT_PROB,
         label_smoothing=LABEL_SMOOTHING,
+        gamma=GAMMA,
+        alpha=ALPHA,
+        tile_ranges=train_ds.tile_ranges
     ).to(device)
 
     optimizer = torch.optim.Adam(

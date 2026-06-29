@@ -50,6 +50,9 @@ class PointCloudDataset(Dataset):
         self._grids:     List[Dict[Tuple[int, int], np.ndarray]] = []
 
         self.minority_classes = minority_classes
+        
+        # Dynamic calculation baseline for vertical metrics
+        max_z_span = 0.0
 
         for fi, path in enumerate(self.csv_paths):
             df   = pd.read_csv(path)
@@ -74,6 +77,12 @@ class PointCloudDataset(Dataset):
             features  = df[cols].values.astype(np.float32)
             labels    = df['label'].values.astype(np.int64)
             z_floor   = float(df['z'].min())
+            
+            # Dynamic calculation track for vertical metrics envelope
+            tile_z_span = float(df['z'].max() - z_floor)
+            if tile_z_span > max_z_span:
+                max_z_span = tile_z_span
+
             tile_data = np.hstack([features, labels.reshape(-1, 1)]).astype(np.float32)
 
             shm = SharedMemory(create=True, size=tile_data.nbytes)
@@ -97,6 +106,9 @@ class PointCloudDataset(Dataset):
                 window_labels = labels[l_idx]
                 has_minority = any(lbl in minority_classes for lbl in window_labels) if len(window_labels) > 0 else False
                 self._windows.append((fi, cx, cy, has_minority))
+
+        # Expose uniform tile ranges for multi-view projections and 3D sparse volume alignments
+        self.tile_ranges = (self.context_size, self.context_size, float(np.ceil(max_z_span)))
 
     def _get_tile(self, fi: int) -> np.ndarray:
         shm = SharedMemory(name=self._shm_names[fi], create=False)

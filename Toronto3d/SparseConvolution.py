@@ -84,13 +84,15 @@ class SPVConvBlock(nn.Module):
 class _3DEncoder(nn.Module):
     DIMS = [32, 64, 128, 256]
 
-    def __init__(self, in_ch, grid_size):
+    def __init__(self, in_ch: int, resolution: float, tile_ranges: Tuple[float, float, float]):
         super().__init__()
         d = self.DIMS
-        self.b1 = SPVConvBlock(in_ch,  d[0], grid_size)
-        self.b2 = SPVConvBlock(d[0],   d[1], grid_size)
-        self.b3 = SPVConvBlock(d[1],   d[2], grid_size)
-        self.b4 = SPVConvBlock(d[2],   d[3], grid_size)
+        
+        self.b1 = SPVConvBlock(in_ch, d[0], resolution=resolution, tile_ranges=tile_ranges)
+        self.b2 = SPVConvBlock(d[0],  d[1], resolution=resolution, tile_ranges=tile_ranges)
+        self.b3 = SPVConvBlock(d[1],  d[2], resolution=resolution, tile_ranges=tile_ranges)
+        self.b4 = SPVConvBlock(d[2],  d[3], resolution=resolution, tile_ranges=tile_ranges)
+        
         self.d1 = _make_linear(d[0], d[0])
         self.d2 = _make_linear(d[1], d[1])
         self.d3 = _make_linear(d[2], d[2])

@@ -36,7 +36,6 @@ class PCENet(nn.Module):
         num_classes:   int,
         in_point_feat: int   = 13,
         resolution:    float = 1.0,
-        grid_size:     Tuple[int, int, int] = (16, 16, 16),
         pretrained_2d: bool  = True,
         lambda_scc:    float = 0.5,
         weights:       torch.Tensor = None,
@@ -54,8 +53,7 @@ class PCENet(nn.Module):
 
         self.context_proj = ContextProjection(resolution, in_channels=in_point_feat, tile_ranges=tile_ranges)
         self.encoder_2d   = ResNet50UNet(in_channels=in_point_feat, pretrained=pretrained_2d)
-        self.encoder_3d   = _3DEncoder(in_point_feat, grid_size)
-
+        self.encoder_3d = _3DEncoder(in_ch=in_point_feat, resolution=resolution, tile_ranges=tile_ranges)
         dim_2d   = self.encoder_2d.out_channels  
         dims_3d  = _3DEncoder.DIMS               
         

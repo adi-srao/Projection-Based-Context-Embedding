@@ -24,7 +24,6 @@ TRAIN_CSV_DIR = r"F:\Aditya\Tiles\Toronto Tiles\split_tiles"
 SAVE_DIR      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\current"
 NUM_CLASSES   = 9
 RESOLUTION    = 0.25
-GRID_SIZE     = (20, 256, 256)
 PRETRAINED_2D = True
 
 LOCAL_SIZE    = 12.8
@@ -33,7 +32,7 @@ STRIDE_RATIO  = 0.25
 MAX_LOCAL_PTS = 32768
 MAX_CTX_PTS   = 65536
 WORKERS       = 2
-CLIP_MAX      = 10      
+CLIP_MAX      = 20      
 CLIP_MIN      = 0.1
 USE_UNCERTAINTY = True
 USE_GEOMETRY    = False

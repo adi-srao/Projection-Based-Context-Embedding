@@ -6,9 +6,9 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
-from PointCloudDataset import PointCloudDataset
-from PBCE import PCENet
-from utilsToronto import calculate_class_weights, train_one_epoch, validate, pce_collate, build_window_sampler, print_fold_summary, compute_minority_classes
+from Toronto3d.PointCloudDataset import PointCloudDataset
+from Toronto3d.PBCE import PCENet
+from Toronto3d.utilsToronto import calculate_class_weights, train_one_epoch, validate, pce_collate, build_window_sampler, print_fold_summary, compute_minority_classes
 from torch.amp import GradScaler
 from sklearn.model_selection import KFold
 
@@ -51,7 +51,7 @@ BATCH_SIZE      = 2
 INIT_LR         = 0.0001
 WEIGHT_DECAY    = 0.01
 LAMBDA_SCC      = 0.25
-PATIENCE        = 20
+PATIENCE        = 7
 DROPOUT_PROB    = 0.3
 LABEL_SMOOTHING = 0.1
 GAMMA           = 2.0  
@@ -120,14 +120,15 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         num_classes=NUM_CLASSES,
         in_point_feat=IN_POINT_FEAT,
         resolution=RESOLUTION,
-        pretrained_2d=PRETRAINED_2D,
         lambda_scc=LAMBDA_SCC,
         weights=class_weights,
         dropout_prob=DROPOUT_PROB,
         label_smoothing=LABEL_SMOOTHING,
         gamma=GAMMA,
         alpha=ALPHA,
-        tile_ranges=train_ds.tile_ranges
+        local_size=LOCAL_SIZE,
+        context_size=CONTEXT_SIZE,
+        max_z_span=train_ds.tile_ranges[2] 
     ).to(device)
 
     optimizer = torch.optim.Adam(

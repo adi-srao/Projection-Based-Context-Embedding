@@ -6,32 +6,43 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
+
 from Toronto3d.PointCloudDataset import PointCloudDataset
 from Toronto3d.PBCE import PCENet
-from Toronto3d.utilsToronto import calculate_class_weights, train_one_epoch, validate, pce_collate, build_window_sampler, print_fold_summary, compute_minority_classes
+from Toronto3d.utilsToronto import (
+    calculate_class_weights, 
+    train_one_epoch, 
+    validate, 
+    pce_collate, 
+    build_window_sampler, 
+    print_fold_summary, 
+    compute_minority_classes
+)
+
 from torch.amp import GradScaler
 from sklearn.model_selection import KFold
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 """
-Enabled processing of three orthogonal 2D views (XY, YZ, XZ) alongside the 3D grid, dynamically rastered based on tile ranges and padded to ensure that the 2D images 
-are passed to the Projection Processing accurately while remaining agnostic of the model being used. All three view features and their relative depth/height/width coordinates 
-during fusion to capture geometry regardless of MLS/ALS data.
+Increased clip max to 10, 4 seemed to be too low for the degree of class imbalance seen. Implemented a weighted sampler that draws frames with minority points more frequently.
 """
 
 TRAIN_CSV_DIR = r"F:\Aditya\Tiles\Toronto Tiles\split_tiles"
 SAVE_DIR      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\current"
+SAM_PATH      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\sam_vit_h_4b8939.pth"
 NUM_CLASSES   = 9
+IMAGE_SIZE    = (256, 256)
 RESOLUTION    = 0.25
+GRID_SIZE     = (20, 256, 256)
 PRETRAINED_2D = True
 
 LOCAL_SIZE    = 12.8
 CONTEXT_SIZE  = 23.04
 STRIDE_RATIO  = 0.25
-MAX_LOCAL_PTS = 32768
-MAX_CTX_PTS   = 65536
-WORKERS       = 2
+MAX_LOCAL_PTS = 32768*4
+MAX_CTX_PTS   = 65536*4
+WORKERS       = 3
 CLIP_MAX      = 20      
 CLIP_MIN      = 0.1
 USE_UNCERTAINTY = True
@@ -51,13 +62,13 @@ BATCH_SIZE      = 2
 INIT_LR         = 0.0001
 WEIGHT_DECAY    = 0.01
 LAMBDA_SCC      = 0.25
-PATIENCE        = 7
+PATIENCE        = 20
 DROPOUT_PROB    = 0.3
 LABEL_SMOOTHING = 0.1
 GAMMA           = 2.0  
 ALPHA           = 0.50
 
-MINORITY_BOOST   = 3.0   
+MINORITY_BOOST   = 3.0 
 
 def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, minority_classes: set[int]) -> None:
     fold_dir = os.path.join(SAVE_DIR, fold_name)
@@ -91,7 +102,6 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         minority_classes=minority_classes
     )
 
-    
     sampler = build_window_sampler(train_ds, MINORITY_BOOST)
 
     train_loader = DataLoader(
@@ -124,11 +134,9 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         weights=class_weights,
         dropout_prob=DROPOUT_PROB,
         label_smoothing=LABEL_SMOOTHING,
-        gamma=GAMMA,
-        alpha=ALPHA,
         local_size=LOCAL_SIZE,
         context_size=CONTEXT_SIZE,
-        max_z_span=train_ds.tile_ranges[2] 
+        use_pretrained=PRETRAINED_2D
     ).to(device)
 
     optimizer = torch.optim.Adam(
@@ -219,5 +227,6 @@ def main():
                             CLIP_MIN, CLIP_MAX, MINORITY_BOOST, LOCAL_SIZE, CONTEXT_SIZE, MAX_LOCAL_PTS, 
                             MAX_CTX_PTS, STRIDE_RATIO, USE_UNCERTAINTY, USE_GEOMETRY)
         run_training(train_paths, val_paths, fold_name, MINORITY_CLASSES)
+
 if __name__ == "__main__":
     main()

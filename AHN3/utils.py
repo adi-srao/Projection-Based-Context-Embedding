@@ -7,6 +7,8 @@ from torch.amp import autocast
 from torch.utils import model_zoo
 
 from AHN3.ProjectionConvolution import Res2NetUNet
+from Res2Net.res2net import model_urls
+
 
 def get_file_distribution(file_list):
     file_labels = []

@@ -2,11 +2,11 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 
-from ContextProjection import ContextProjection
-from utils import get_pretrained_res2net50_unet
-from ProjectionConvolution import Res2NetUNet
-from SparseConvolution import _3DEncoder, _make_linear
-from FocalDiceLoss import FocalDiceLoss
+from AHN3.ContextProjection import ContextProjection
+from AHN3.utils import get_pretrained_res2net50_unet
+from AHN3.ProjectionConvolution import Res2NetUNet
+from AHN3.SparseConvolution import _3DEncoder, _make_linear
+from AHN3.FocalDiceLoss import FocalDiceLoss
 
 class EmbeddingDisentangling(nn.Module):
     def __init__(self, dim_3d, dim_2d, dim_out, dropout_prob=0.1):

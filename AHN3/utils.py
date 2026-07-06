@@ -4,6 +4,9 @@ import pandas as pd
 import torch       
 from tqdm.auto import tqdm
 from torch.amp import autocast
+from torch.utils import model_zoo
+
+from AHN3.ProjectionConvolution import Res2NetUNet
 
 def get_file_distribution(file_list):
     file_labels = []
@@ -164,3 +167,16 @@ def validate(model, loader, device, num_classes):
         "loss": tot/n, "seg": seg/n, "scc": scc/n,
         "miou": miou,  "acc": acc,   "iou_per_cls": iou_per_cls,
     }
+
+def get_pretrained_res2net50_unet(in_channels=15, out_channels=128):
+    model = Res2NetUNet(in_channels=in_channels, out_channels=out_channels, baseWidth=26, scale=4)
+    
+    pretrained_state = model_zoo.load_url(model_urls['res2net50_26w_4s'])
+    
+    filtered_state = {
+        k: v for k, v in pretrained_state.items() 
+        if not k.startswith('conv1') and not k.startswith('bn1') and not k.startswith('fc')
+    }
+    
+    model.load_state_dict(filtered_state, strict=False)    
+    return model

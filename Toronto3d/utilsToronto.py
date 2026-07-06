@@ -152,6 +152,11 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler, maxNo
 @torch.no_grad()
 def validate(model, loader, device, num_classes):
     model.eval()
+
+    for m in model.modules():
+        if 'Sparse' in m.__class__.__name__ or 'encoder_3d' in m.__class__.__name__:
+            m.train()
+
     tot, seg, scc = 0.0, 0.0, 0.0
     all_preds, all_labels = [], []
     pbar = tqdm(loader, desc="Val  ", leave=False)

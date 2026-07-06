@@ -14,12 +14,9 @@ from sklearn.model_selection import KFold
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-"""
-Increased clip max to 10, 4 seemed to be too low for the degree of class imbalance seen. Implemented a weighted sampler that draws frames with minority points more frequently.
-"""
-
 TRAIN_CSV_DIR = r"F:\Aditya\Tiles\Toronto Tiles\split_tiles"
 SAVE_DIR      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\current"
+SAM_PATH      = r"F:\Aditya\Lidar Semantic Segmentation\PBCE\Toronto3d\sam_vit_h_4b8939.pth"
 NUM_CLASSES   = 9
 IMAGE_SIZE    = (256, 256)
 RESOLUTION    = 0.25
@@ -29,8 +26,8 @@ PRETRAINED_2D = True
 LOCAL_SIZE    = 12.8
 CONTEXT_SIZE  = 23.04
 STRIDE_RATIO  = 0.25
-MAX_LOCAL_PTS = 32768
-MAX_CTX_PTS   = 65536
+MAX_LOCAL_PTS = 32768*4
+MAX_CTX_PTS   = 65536*4
 WORKERS       = 3
 CLIP_MAX      = 10      
 CLIP_MIN      = 0.1
@@ -127,6 +124,8 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         weights=class_weights,
         dropout_prob=DROPOUT_PROB,
         label_smoothing=LABEL_SMOOTHING,
+        sam_checkpoint_path= SAM_PATH if PRETRAINED_2D else None,
+        sam_variant="vit_h",
     ).to(device)
 
     optimizer = torch.optim.Adam(

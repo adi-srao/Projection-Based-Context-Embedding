@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 
 from ContextProjection import ContextProjection
-from ProjectionConvolution import ResNet50UNet
+from utils import get_pretrained_res2net50_unet
+from ProjectionConvolution import Res2NetUNet
 from SparseConvolution import _3DEncoder, _make_linear
 from FocalDiceLoss import FocalDiceLoss
 
@@ -47,15 +48,20 @@ class PCENet(nn.Module):
         self.label_smoothing = label_smoothing
 
         self.context_proj = ContextProjection(image_size, resolution, in_channels=in_point_feat)
-        self.encoder_2d   = ResNet50UNet(in_channels=in_point_feat, pretrained=pretrained_2d)
+        
+        if pretrained_2d:
+            self.encoder_2d = get_pretrained_res2net50_unet(in_channels=in_point_feat, out_channels=128)
+        else:
+            self.encoder_2d = Res2NetUNet(in_channels=in_point_feat, out_channels=128)
+            
         self.encoder_3d   = _3DEncoder(in_point_feat, grid_size)
 
         dim_2d   = self.encoder_2d.out_channels  
         dims_3d  = _3DEncoder.DIMS               
         self.ed_blocks = nn.ModuleList([
-    EmbeddingDisentangling(dims_3d[i], dim_2d, dims_3d[i], dropout_prob=self.dropout_prob)
-    for i in range(4)
-])
+            EmbeddingDisentangling(dims_3d[i], dim_2d, dims_3d[i], dropout_prob=self.dropout_prob)
+            for i in range(4)
+        ])
 
         total_dim = sum(dims_3d)   # 480
         self.classifier = nn.Sequential(
@@ -68,13 +74,13 @@ class PCENet(nn.Module):
         self.ssc_head   = nn.Linear(dim_2d, num_classes)
         
         if weights is not None:
-            self.seg_loss = self.seg_loss = FocalDiceLoss(
-            num_classes=num_classes,
-            gamma=gamma,
-            alpha=alpha,
-            weight=weights,
-            ignore_index=-1
-        )
+            self.seg_loss = FocalDiceLoss(
+                num_classes=num_classes,
+                gamma=gamma,
+                alpha=alpha,
+                weight=weights,
+                ignore_index=-1
+            )
             
         self.scc_loss   = nn.MultiLabelSoftMarginLoss()
 
@@ -98,7 +104,8 @@ class PCENet(nn.Module):
         _,   pix_local, rel_height = self.context_proj(p_local,   bi_local,   B)
 
         E_2d  = self.encoder_2d(img)
-        q_2d  = ResNet50UNet.query_context_features(E_2d, pix_local, bi_local)
+        
+        q_2d  = Res2NetUNet.query_context_features(E_2d, pix_local, bi_local)
         
         F_3d  = self.encoder_3d(p_local, p_local[:, :3], bi_local, B)
 

@@ -213,7 +213,6 @@ class PointCloudDataset(Dataset):
             "p_local":   torch.from_numpy(p_local).float(),
             "p_context": torch.from_numpy(p_context).float(),
             "labels":    torch.from_numpy(labels).long(),
-            "window_center": torch.tensor([cx, cy], dtype=torch.float32) # <-- ADD THIS LINE
         }
     
     @staticmethod

@@ -5,7 +5,7 @@ import torch
 import os
 from tqdm.auto import tqdm
 from torch.amp import autocast
-from Toronto3d.PointCloudDataset import PointCloudDataset
+from PointCloudDataset import PointCloudDataset
 
 def calculate_class_weights(dataset, num_classes, clip_Max, clip_Min):
     counts = np.zeros(num_classes)
@@ -32,9 +32,6 @@ def calculate_class_weights(dataset, num_classes, clip_Max, clip_Min):
     weights = weights / np.min(weights)
     return torch.tensor(np.clip(weights, clip_Min, clip_Max), dtype=torch.float32)
 
-from typing import List, Dict
-import torch
-
 def pce_collate(batch: List[Dict]) -> Dict:
     p_locals, p_ctxs, lbls = [], [], []
     bi_local_list, bi_ctx_list = [], []
@@ -42,24 +39,19 @@ def pce_collate(batch: List[Dict]) -> Dict:
     for i, sample in enumerate(batch):
         n = sample["p_local"].shape[0]
         m = sample["p_context"].shape[0]
-        
         p_locals.append(sample["p_local"])
         p_ctxs.append(sample["p_context"])
         lbls.append(sample["labels"])
-        
         bi_local_list.append(torch.full((n,), i, dtype=torch.long))
         bi_ctx_list.append(torch.full((m,), i, dtype=torch.long))
 
-    window_centers = torch.stack([item["window_center"] for item in batch], dim=0)
-
     return {
-        "p_local":       torch.cat(p_locals, dim=0),
-        "p_context":     torch.cat(p_ctxs,   dim=0),
-        "labels":        torch.cat(lbls,      dim=0),
-        "bi_local":      torch.cat(bi_local_list, dim=0),
-        "bi_context":    torch.cat(bi_ctx_list,   dim=0),
-        "batch_size":    len(batch),
-        "window_centers": window_centers,  
+        "p_local":    torch.cat(p_locals, dim=0),
+        "p_context":  torch.cat(p_ctxs,   dim=0),
+        "labels":     torch.cat(lbls,      dim=0),
+        "bi_local":   torch.cat(bi_local_list, dim=0),
+        "bi_context": torch.cat(bi_ctx_list,   dim=0),
+        "batch_size": len(batch),
     }
 
 def compute_iou(preds, labels, num_classes):
@@ -74,6 +66,7 @@ def compute_iou(preds, labels, num_classes):
         ious.append(inter / union if union > 0 else float("nan"))
     return ious
 
+
 def train_one_epoch(model, loader, optimizer, device, num_classes, scaler, maxNorm):
     model.train()
     tot, seg, scc = 0.0, 0.0, 0.0
@@ -84,24 +77,16 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler, maxNo
     optimizer.zero_grad()
 
     for i, batch in enumerate(pbar):
-        p_local        = batch["p_local"].to(device, non_blocking=True)
-        p_context      = batch["p_context"].to(device, non_blocking=True)
-        labels         = batch["labels"].to(device, non_blocking=True)
-        bi_local       = batch["bi_local"].to(device)
-        bi_ctx         = batch["bi_context"].to(device)
-        window_centers = batch["window_centers"].to(device)
-        B              = batch["batch_size"]
+        p_local   = batch["p_local"].to(device, non_blocking=True)
+        p_context = batch["p_context"].to(device, non_blocking=True)
+        labels    = batch["labels"].to(device, non_blocking=True)
+        bi_local  = batch["bi_local"].to(device)
+        bi_ctx    = batch["bi_context"].to(device)
+        B         = batch["batch_size"]
 
-        with torch.autocast(device_type='cuda', enabled=True):
-            out = model(
-                p_local=p_local, 
-                p_context=p_context, 
-                bi_local=bi_local, 
-                bi_context=bi_ctx,
-                batch_size=B, 
-                window_centers=window_centers, 
-                labels=labels
-            )
+        with autocast(device_type='cuda', enabled=True):
+            out = model(p_local, p_context, bi_local, bi_ctx,
+                        batch_size=B, labels=labels)
             loss = out["loss"] / accumulation_steps
 
         if torch.isnan(loss):
@@ -129,13 +114,6 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler, maxNo
         pbar.set_postfix(loss=f'{out["loss"].item():.3f}',
                          seg=f'{out["loss_seg"].item():.3f}')
 
-    if len(loader) % accumulation_steps != 0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=maxNorm)
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad()
-
     n           = len(loader)
     all_preds   = torch.cat(all_preds)
     all_labels  = torch.cat(all_labels)
@@ -144,7 +122,7 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler, maxNo
     acc         = (all_preds[all_labels != -1] == all_labels[all_labels != -1]).float().mean().item()
 
     return {
-        "loss": tot/n, "loss_seg": seg/n, "loss_scc": scc/n,
+        "loss": tot/n, "seg": seg/n, "scc": scc/n,
         "miou": miou,  "acc": acc,   "iou_per_cls": iou_per_cls,
     }
 
@@ -162,24 +140,15 @@ def validate(model, loader, device, num_classes):
     pbar = tqdm(loader, desc="Val  ", leave=False)
 
     for batch in pbar:
-        p_local        = batch["p_local"].to(device)
-        p_context      = batch["p_context"].to(device)
-        bi_local       = batch["bi_local"].to(device)
-        bi_ctx         = batch["bi_context"].to(device)
-        window_centers = batch["window_centers"].to(device) 
-        labels         = batch["labels"].to(device)
-        B              = batch["batch_size"]
+        p_local   = batch["p_local"].to(device)
+        p_context = batch["p_context"].to(device)
+        bi_local  = batch["bi_local"].to(device)
+        bi_ctx    = batch["bi_context"].to(device)
+        labels    = batch["labels"].to(device)
+        B         = batch["batch_size"]
 
-        with torch.autocast(device_type='cuda', enabled=True):
-            out = model(
-                p_local=p_local, 
-                p_context=p_context, 
-                bi_local=bi_local, 
-                bi_context=bi_ctx,
-                batch_size=B, 
-                window_centers=window_centers,
-                labels=labels
-            )
+        out = model(p_local, p_context, bi_local, bi_ctx,
+                    batch_size=B, labels=labels)
 
         tot += out["loss"].item()
         seg += out["loss_seg"].item()
@@ -197,7 +166,7 @@ def validate(model, loader, device, num_classes):
     acc         = (all_preds[all_labels != -1] == all_labels[all_labels != -1]).float().mean().item()
 
     return {
-        "loss": tot/n, "loss_seg": seg/n, "loss_scc": scc/n, 
+        "loss": tot/n, "seg": seg/n, "scc": scc/n,
         "miou": miou,  "acc": acc,   "iou_per_cls": iou_per_cls,
     }
 

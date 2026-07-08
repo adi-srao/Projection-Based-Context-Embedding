@@ -18,6 +18,7 @@ from Toronto3d.utilsToronto import (
     print_fold_summary, 
     compute_minority_classes
 )
+
 from torch.amp import GradScaler
 from sklearn.model_selection import KFold
 
@@ -129,14 +130,13 @@ def run_training(train_paths: list[str], val_paths: list[str], fold_name: str, m
         num_classes=NUM_CLASSES,
         in_point_feat=IN_POINT_FEAT,
         resolution=RESOLUTION,
-        pretrained_2d=PRETRAINED_2D,
         lambda_scc=LAMBDA_SCC,
         weights=class_weights,
         dropout_prob=DROPOUT_PROB,
         label_smoothing=LABEL_SMOOTHING,
-        gamma=GAMMA,
-        alpha=ALPHA,
-        tile_ranges=train_ds.tile_ranges
+        local_size=LOCAL_SIZE,
+        context_size=CONTEXT_SIZE,
+        use_pretrained=PRETRAINED_2D
     ).to(device)
 
     optimizer = torch.optim.Adam(

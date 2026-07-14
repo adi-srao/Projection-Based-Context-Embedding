@@ -11,14 +11,14 @@ from AHN3.FocalDiceLoss import FocalDiceLoss
 class EmbeddingDisentangling(nn.Module):
     def __init__(self, dim_3d, dim_2d, dim_out, dropout_prob=0.1):
         super().__init__()
-        self.height_proj = _make_linear(1, dim_2d)
-        self.fuse_2d     = _make_linear(dim_2d * 2, dim_2d)
+        self.height_proj = _make_linear(3, dim_2d)
+        self.fuse_2d     = _make_linear(dim_2d * 4, dim_2d)
         self.fuse_3d     = _make_linear(dim_2d + dim_3d, dim_out)
         self.dropout     = nn.Dropout(dropout_prob) 
         self.attn_gate   = nn.Linear(dim_out, dim_out)
 
     def forward(self, f3d, e2d, rel_h):
-        h_feat  = self.height_proj(rel_h.unsqueeze(1))
+        h_feat  = self.height_proj(rel_h)
         lifted  = self.fuse_2d(torch.cat([h_feat, e2d], dim=1))
         f_prime = self.fuse_3d(torch.cat([lifted, f3d], dim=1))
         f_prime = self.dropout(f_prime)
@@ -97,28 +97,53 @@ class PCENet(nn.Module):
                 soft[flat[m].unique(), c] = 1.0
         return soft
 
-    def forward(self, p_local, p_context, bi_local, bi_context,
+    def forward(self, p_local, p_context, p_local_abs, p_context_abs,
+                proj_grids, bi_local, bi_context,
                 batch_size, labels=None):
         B = batch_size
-        img, pix_ctx,   _          = self.context_proj(p_context, bi_context, B)
-        _,   pix_local, rel_height = self.context_proj(p_local,   bi_local,   B)
 
-        E_2d  = self.encoder_2d(img)
-        
-        q_2d  = Res2NetUNet.query_context_features(E_2d, pix_local, bi_local)
-        
+        views = ["xy", "yz", "xz"]
+        img_views = []
+        pix_local_views = []
+        rel_depth_views = []
+
+        for view in views:
+            img_view, _, _ = self.context_proj(p_context_abs, bi_context, B, proj_grids=proj_grids, view=view)
+            _, pix_local_view, rel_depth_view = self.context_proj(p_local_abs, bi_local, B, proj_grids=proj_grids, view=view)
+            img_views.append(img_view)
+            pix_local_views.append(pix_local_view)
+            rel_depth_views.append(rel_depth_view)
+
+        E_2d_views = [self.encoder_2d(img_view) for img_view in img_views]
+
+        q_2d_views = []
+        for view_idx in range(len(views)):
+            q_2d_views.append(
+                Res2NetUNet.query_context_features(E_2d_views[view_idx], pix_local_views[view_idx], bi_local)
+            )
+
+        q_2d = [
+            torch.cat([q_2d_views[v][i] for v in range(len(views))], dim=1)
+            for i in range(4)
+        ]
+
+        rel_height = torch.stack(rel_depth_views, dim=1)
+
         F_3d  = self.encoder_3d(p_local, p_local[:, :3], bi_local, B)
 
         fused = [self.ed_blocks[i](F_3d[i], q_2d[i], rel_height)
                  for i in range(4)]
         logits = self.classifier(torch.cat(fused, dim=1))
 
-        out = {"logits": logits}
+        img = img_views[0]
+        pix_local = pix_local_views[0]
+        H, W = img.shape[-2], img.shape[-1]
+
+        out = {"logits": logits, "pix_local_xy": pix_local, "H": H, "W": W}
 
         if labels is not None:
-            H, W = img.shape[-2], img.shape[-1]
             loss_seg  = self.seg_loss(logits, labels)
-            e1_flat   = E_2d[0].permute(0,2,3,1).reshape(-1, E_2d[0].shape[1])
+            e1_flat   = E_2d_views[0].permute(0,2,3,1).reshape(-1, E_2d_views[0].shape[1])
             scc_lgt   = self.ssc_head(e1_flat)
             soft_lbl  = self._soft_pixel_labels(labels, pix_local, bi_local, B, H, W)
             loss_scc  = self.scc_loss(scc_lgt, soft_lbl)

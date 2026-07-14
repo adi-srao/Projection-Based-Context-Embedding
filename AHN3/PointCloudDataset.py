@@ -48,6 +48,7 @@ class PointCloudDataset(Dataset):
         self._z_floors:  List[float] = []
         self._windows:   List[Tuple[int, float, float]] = []
         self._grids:     List[Dict[Tuple[int, int], np.ndarray]] = []
+        self._proj_grids: List[Dict[str, Dict[Tuple[int, int], np.ndarray]]] = []
         self._sampled_indices: List[Tuple[np.ndarray, np.ndarray]] = []
 
         for fi, path in enumerate(self.csv_paths):
@@ -88,6 +89,7 @@ class PointCloudDataset(Dataset):
 
             self._z_floors.append(z_floor)
             self._grids.append(self._build_grid(tile_data))
+            self._proj_grids.append(self._build_projection_grids(tile_data))
             self._windows.extend(self._compute_windows(tile_data, fi))
 
         for idx in range(len(self._windows)):
@@ -159,6 +161,33 @@ class PointCloudDataset(Dataset):
             cx += stride
         return windows
 
+    def _build_projection_grids(self, pts: np.ndarray) -> Dict[str, Dict]:
+        bounds = {
+            "xy": {
+                "grid": self._build_grid(pts[:, [0, 1]]),
+                "min": np.array([float(pts[:, 0].min()), float(pts[:, 1].min())], dtype=np.float32),
+            },
+            "yz": {
+                "grid": self._build_grid(pts[:, [1, 2]]),
+                "min": np.array([float(pts[:, 1].min()), float(pts[:, 2].min())], dtype=np.float32),
+            },
+            "xz": {
+                "grid": self._build_grid(pts[:, [0, 2]]),
+                "min": np.array([float(pts[:, 0].min()), float(pts[:, 2].min())], dtype=np.float32),
+            },
+        }
+        return bounds
+
+    @staticmethod
+    def _project_view_coords(points: np.ndarray, view: str) -> np.ndarray:
+        if view == "xy":
+            return points[:, [0, 1]]
+        if view == "yz":
+            return points[:, [1, 2]]
+        if view == "xz":
+            return points[:, [0, 2]]
+        raise ValueError(f"Unknown view: {view}")
+
     @staticmethod
     def _sample(idx: np.ndarray, n: int, rng) -> np.ndarray:
         if len(idx) == 0:
@@ -173,20 +202,31 @@ class PointCloudDataset(Dataset):
 
         pts, shm = self._get_tile(fi)
         try:
-            p_local   = pts[l_idx, :-1].copy()
-            p_context = pts[c_idx, :-1].copy()
-            labels    = pts[l_idx, -1].copy()
-            z_floor   = self._z_floors[fi]
+            p_local_abs   = pts[l_idx, :-1].copy()
+            p_context_abs = pts[c_idx, :-1].copy()
+            labels        = pts[l_idx, -1].copy()
+            z_floor       = self._z_floors[fi]
         finally:
             shm.close()
+
+        p_local = p_local_abs.copy()
+        p_context = p_context_abs.copy()
+
+        if self.augment:
+            local_transform   = self._augment_transform(self._rng, p_local.shape[0])
+            context_transform = self._augment_transform(self._rng, p_context.shape[0])
+            p_local   = self._apply_augment(p_local,   local_transform)
+            p_context = self._apply_augment(p_context, context_transform)
+            p_local_abs   = self._apply_augment(p_local_abs,   local_transform)
+            p_context_abs = self._apply_augment(p_context_abs, context_transform)
 
         ctx_min = p_context[:, :3].min(axis=0)
         p_local[:, :2]   -= ctx_min[:2]
         p_context[:, :2] -= ctx_min[:2]
 
-        local_z_min = p_local[:, 2].min()          
+        local_z_min = p_local[:, 2].min()
         hag_local   = (p_local[:, 2]   - local_z_min).reshape(-1, 1)
-        hag_context = (p_context[:, 2] - local_z_min).reshape(-1, 1) 
+        hag_context = (p_context[:, 2] - local_z_min).reshape(-1, 1)
 
         z_global_local   = (p_local[:, 2]   - z_floor).reshape(-1, 1)
         z_global_context = (p_context[:, 2] - z_floor).reshape(-1, 1)
@@ -197,26 +237,42 @@ class PointCloudDataset(Dataset):
         p_local   = np.hstack([p_local,   hag_local,   z_global_local])
         p_context = np.hstack([p_context, hag_context, z_global_context])
 
-        if self.augment:
-            p_local   = self._augment(p_local,   self._rng)
-            p_context = self._augment(p_context, self._rng)
+        local_z_min_abs = p_local_abs[:, 2].min()
+        hag_local_abs   = (p_local_abs[:, 2]   - local_z_min_abs).reshape(-1, 1)
+        hag_context_abs = (p_context_abs[:, 2] - local_z_min_abs).reshape(-1, 1)
+
+        z_global_local_abs   = (p_local_abs[:, 2]   - z_floor).reshape(-1, 1)
+        z_global_context_abs = (p_context_abs[:, 2] - z_floor).reshape(-1, 1)
+
+        p_local_abs   = np.hstack([p_local_abs,   hag_local_abs,   z_global_local_abs])
+        p_context_abs = np.hstack([p_context_abs, hag_context_abs, z_global_context_abs])
 
         return {
-            "p_local":   torch.from_numpy(p_local).float(),
-            "p_context": torch.from_numpy(p_context).float(),
-            "labels":    torch.from_numpy(labels).long(),
+            "p_local":       torch.from_numpy(p_local).float(),
+            "p_context":     torch.from_numpy(p_context).float(),
+            "p_local_abs":   torch.from_numpy(p_local_abs).float(),
+            "p_context_abs": torch.from_numpy(p_context_abs).float(),
+            "labels":        torch.from_numpy(labels).long(),
+            "proj_grids":    self._proj_grids[fi],
         }
     
     @staticmethod
-    def _augment(pts: np.ndarray, rng) -> np.ndarray:
-        pts   = pts.copy()
+    def _augment_transform(rng, num_points: int):
         angle = rng.uniform(0, 2 * np.pi)
-        c, s  = np.cos(angle), np.sin(angle)
-        pts[:, :2] = pts[:, :2] @ np.array([[c, s], [-s, c]], dtype=np.float32)
-        if rng.random() > 0.5: pts[:, 0] = -pts[:, 0]
+        c, s = np.cos(angle), np.sin(angle)
+        flip = rng.random() > 0.5
         scale = rng.uniform(0.95, 1.05)
+        jitter = rng.normal(0, 0.01, size=(num_points, 3)).astype(np.float32)
+        return c, s, flip, scale, jitter
+
+    @staticmethod
+    def _apply_augment(pts: np.ndarray, transform) -> np.ndarray:
+        pts = pts.copy()
+        c, s, flip, scale, jitter = transform
+        pts[:, :2] = pts[:, :2] @ np.array([[c, s], [-s, c]], dtype=np.float32)
+        if flip:
+            pts[:, 0] = -pts[:, 0]
         pts[:, :3] *= scale
-        jitter = rng.normal(0, 0.01, size=(pts.shape[0], 3))
         pts[:, :3] += jitter
         return pts
 

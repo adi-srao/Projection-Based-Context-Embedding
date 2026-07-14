@@ -8,7 +8,7 @@ from PointCloudDataset import PointCloudDataset
 import yaml
 import glob
 from AHN3.PBCE import PCENet
-from AHN3.utils import get_file_distribution, calculate_class_weights, train_one_epoch, validate, pce_collate
+from AHN3.utils import get_file_distribution, calculate_class_weights, train_one_epoch, validate, pce_collate, dump_class_masks
 from torch.amp import GradScaler
 from sklearn.model_selection import StratifiedKFold
 
@@ -184,6 +184,14 @@ def run_fold(fold_idx, train_files, val_files):
             if epochs_no_improve >= PATIENCE:
                 print(f"Early stopping triggered for Fold {fold_idx}")
                 break
+
+        best_ckpt_path = os.path.join(fold_dir, "best.pth")
+        if os.path.exists(best_ckpt_path):
+            model.load_state_dict(torch.load(best_ckpt_path, map_location=device))
+            masks_path = os.path.join(fold_dir, "class_masks.npz")
+            dump_class_masks(model, val_loader, device, NUM_CLASSES, masks_path)
+        else:
+            print(f"Fold {fold_idx}: no best.pth found, skipping class-mask dump.")
     finally:
         train_ds.cleanup()
         val_ds.cleanup()

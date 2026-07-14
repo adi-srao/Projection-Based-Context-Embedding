@@ -45,7 +45,7 @@ def calculate_class_weights(dataset, num_classes, clip_Max, clip_Min):
     return torch.tensor(np.clip(weights, clip_Min, clip_Max), dtype=torch.float32)
 
 def pce_collate(batch: List[Dict]) -> Dict:
-    p_locals, p_ctxs, lbls = [], [], []
+    p_locals, p_ctxs, p_local_abs, p_ctx_abs, lbls = [], [], [], [], []
     bi_local_list, bi_ctx_list = [], []
 
     for i, sample in enumerate(batch):
@@ -53,17 +53,22 @@ def pce_collate(batch: List[Dict]) -> Dict:
         m = sample["p_context"].shape[0]
         p_locals.append(sample["p_local"])
         p_ctxs.append(sample["p_context"])
+        p_local_abs.append(sample["p_local_abs"])
+        p_ctx_abs.append(sample["p_context_abs"])
         lbls.append(sample["labels"])
         bi_local_list.append(torch.full((n,), i, dtype=torch.long))
         bi_ctx_list.append(torch.full((m,), i, dtype=torch.long))
 
     return {
-        "p_local":    torch.cat(p_locals, dim=0),
-        "p_context":  torch.cat(p_ctxs,   dim=0),
-        "labels":     torch.cat(lbls,      dim=0),
-        "bi_local":   torch.cat(bi_local_list, dim=0),
-        "bi_context": torch.cat(bi_ctx_list,   dim=0),
-        "batch_size": len(batch),
+        "p_local":      torch.cat(p_locals,     dim=0),
+        "p_context":    torch.cat(p_ctxs,       dim=0),
+        "p_local_abs":  torch.cat(p_local_abs,  dim=0),
+        "p_context_abs":torch.cat(p_ctx_abs,    dim=0),
+        "labels":       torch.cat(lbls,         dim=0),
+        "bi_local":     torch.cat(bi_local_list, dim=0),
+        "bi_context":   torch.cat(bi_ctx_list,   dim=0),
+        "proj_grids":   [sample["proj_grids"] for sample in batch],
+        "batch_size":   len(batch),
     }
 
 def compute_iou(preds, labels, num_classes):
@@ -88,6 +93,8 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler):
     for batch in pbar:
         p_local   = batch["p_local"].to(device, non_blocking=True)
         p_context = batch["p_context"].to(device, non_blocking=True)
+        p_local_abs = batch["p_local_abs"].to(device, non_blocking=True)
+        p_context_abs = batch["p_context_abs"].to(device, non_blocking=True)
         labels    = batch["labels"].to(device, non_blocking=True)
         bi_local  = batch["bi_local"].to(device)
         bi_ctx    = batch["bi_context"].to(device)
@@ -96,8 +103,14 @@ def train_one_epoch(model, loader, optimizer, device, num_classes, scaler):
         optimizer.zero_grad()
 
         with autocast(device_type='cuda', enabled=True):
-            out = model(p_local, p_context, bi_local, bi_ctx,
-                        batch_size=B, labels=labels)
+            out = model(
+                p_local, p_context,
+                p_local_abs, p_context_abs,
+                batch["proj_grids"],
+                bi_local, bi_ctx,
+                batch_size=B,
+                labels=labels
+            )
             loss = out["loss"]
 
         scaler.scale(loss).backward()
@@ -142,13 +155,21 @@ def validate(model, loader, device, num_classes):
     for batch in pbar:
         p_local   = batch["p_local"].to(device)
         p_context = batch["p_context"].to(device)
+        p_local_abs = batch["p_local_abs"].to(device)
+        p_context_abs = batch["p_context_abs"].to(device)
         bi_local  = batch["bi_local"].to(device)
         bi_ctx    = batch["bi_context"].to(device)
         labels    = batch["labels"].to(device)
         B         = batch["batch_size"]
 
-        out = model(p_local, p_context, bi_local, bi_ctx,
-                    batch_size=B, labels=labels)
+        out = model(
+            p_local, p_context,
+            p_local_abs, p_context_abs,
+            batch["proj_grids"],
+            bi_local, bi_ctx,
+            batch_size=B,
+            labels=labels
+        )
 
         tot += out["loss"].item()
         seg += out["loss_seg"].item()
@@ -169,6 +190,89 @@ def validate(model, loader, device, num_classes):
         "loss": tot/n, "seg": seg/n, "scc": scc/n,
         "miou": miou,  "acc": acc,   "iou_per_cls": iou_per_cls,
     }
+
+@torch.no_grad()
+def dump_class_masks(model, loader, device, num_classes, out_path):
+    """
+    Runs `model` over `loader` (expected shuffle=False, so batches walk the
+    dataset's windows in order) and rasterizes, for every window, a boolean
+    (num_classes, H, W) BEV mask of predicted classes using the same "xy"
+    pixel projection the model already computes internally.
+
+    All windows are packed into a single compressed .npz at `out_path`:
+      - masks:      (N, num_classes, H, W) uint8, 1 where a predicted point
+                     of that class fell into that pixel
+      - window_ids: (N,) index into loader.dataset._windows
+      - file_idx:   (N,) source csv/tile index for that window
+      - cx, cy:     (N,) window center coordinates (for locating it later)
+    """
+    model.eval()
+    dataset = loader.dataset
+
+    all_masks, window_ids, file_idx_list, cx_list, cy_list = [], [], [], [], []
+    global_idx = 0
+    pbar = tqdm(loader, desc="Dump masks", leave=False)
+
+    for batch in pbar:
+        p_local       = batch["p_local"].to(device)
+        p_context     = batch["p_context"].to(device)
+        p_local_abs   = batch["p_local_abs"].to(device)
+        p_context_abs = batch["p_context_abs"].to(device)
+        bi_local      = batch["bi_local"].to(device)
+        bi_ctx        = batch["bi_context"].to(device)
+        B             = batch["batch_size"]
+
+        out = model(
+            p_local, p_context,
+            p_local_abs, p_context_abs,
+            batch["proj_grids"],
+            bi_local, bi_ctx,
+            batch_size=B,
+            labels=None,
+        )
+
+        preds = out["logits"].argmax(dim=1)   # (num_local_points,)
+        pix   = out["pix_local_xy"]           # (num_local_points, 2) -> (u, v)
+        H, W  = out["H"], out["W"]
+        bi_cpu = bi_local.cpu()
+
+        for b in range(B):
+            m = bi_cpu == b
+            u = pix[m, 0].clamp(0, W - 1).cpu().numpy()
+            v = pix[m, 1].clamp(0, H - 1).cpu().numpy()
+            pc = preds[m].cpu().numpy()
+
+            window_mask = np.zeros((num_classes, H, W), dtype=np.uint8)
+            for c in range(num_classes):
+                sel = pc == c
+                if sel.any():
+                    window_mask[c, v[sel], u[sel]] = 1
+
+            all_masks.append(window_mask)
+
+            fi, cx, cy = dataset._windows[global_idx]
+            window_ids.append(global_idx)
+            file_idx_list.append(fi)
+            cx_list.append(cx)
+            cy_list.append(cy)
+            global_idx += 1
+
+    if len(all_masks) == 0:
+        print(f"No windows to dump for {out_path}, skipping.")
+        return
+
+    masks_arr = np.stack(all_masks, axis=0)  # (N, C, H, W)
+
+    np.savez_compressed(
+        out_path,
+        masks=masks_arr,
+        window_ids=np.array(window_ids, dtype=np.int64),
+        file_idx=np.array(file_idx_list, dtype=np.int64),
+        cx=np.array(cx_list, dtype=np.float32),
+        cy=np.array(cy_list, dtype=np.float32),
+    )
+    print(f"Saved class-wise BEV masks {masks_arr.shape} -> {out_path}")
+
 
 def get_pretrained_res2net50_unet(in_channels=15, out_channels=128):
     model = Res2NetUNet(in_channels=in_channels, out_channels=out_channels, baseWidth=26, scale=4)

@@ -78,14 +78,10 @@ Adds omnivariance, eigenentropy, anisotropy, planarity, linearity, surface varia
 | **uncertainty_aware_28-4 (final)** | **0.7106** |
 
 Key findings:
-- Reducing from 5 ASPRS classes to 3 dominant classes (Ground, Vegetation, Buildings) produced the single largest improvement, nearly doubling mIoU by eliminating unstable gradients from severely imbalanced minority classes.
-- Increasing spatial resolution (grid 1.5→0.5, voxel 0.75→0.5) alongside the ResNet-50 U-Net introduction significantly improved class separability.
-- The model was consistently underfitting rather than overfitting — dropout and label smoothing were removed, and the Dice loss weight (α) was reduced from 0.5 to 0.25.
-- Integrating epistemic uncertainty as a feature made training significantly more stable and reduced class forgetting. Height-above-ground and z_global helped differentiate vegetation from ground/buildings but ground–building confusion persists; verticality as a feature is a suggested next step.
-
-### Toronto-3D
-
-Best validation mIoU: **0.1096** (tuning_4). Results were constrained by VRAM-forced batch size reduction, severe class imbalance across 9 semantic categories, and potential weakening of ImageNet spatial priors from modified IMAGE_SIZE. The dataset remains underfit; suggested improvements are larger batches, reduced regularisation, extended training schedules, and stronger imbalance mitigation.
+- Reducing to  dominant classes produced the single largest improvement, nearly doubling mIoU by eliminating unstable gradients from severely imbalanced minority classes.
+- Increasing spatial resolution alongside the U-Net introduction significantly improved class separability.
+- The model is prone to underfitting rather than overfitting — dropout and label smoothing is to be removed, and the Dice loss weight (α) is to be reduced.
+- Integrating epistemic uncertainty as a feature makes training significantly more stable and reduced class forgetting. Height-above-ground and z_global helped differentiate vegetation from ground/buildings but ground–building confusion persists; verticality as a feature is a suggested next step.
 
 ---
 
@@ -144,5 +140,8 @@ python Toronto3d/train_toronto.py
 This work extends:
 
 > H. Dai et al., *"Large-Scale ALS Point Cloud Segmentation via Projection-Based Context Embedding"*
+> A. Kirillov et al., *"Segment Anything"*
+> F. Chen et al., *"Res2-Unet, a New Deep Architecture for Building Detection From High Spatial Resolution Images"*
+
 
 Geometric descriptors computed using [jakteristics](https://github.com/jakarto3d/jakteristics) (Weinmann-style features).
